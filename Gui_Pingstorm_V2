@@ -1,0 +1,188 @@
+import customtkinter as ctk
+import subprocess
+import csv
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib
+
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+app = ctk.CTk()
+app.title("Ping Storm GUI v2")
+app.geometry("850x700")
+
+results = []  # store ping results
+chart_canvas = None
+summary_labels = []
+
+# ------------- PING LOGIC IN PYTHON ----------------
+def ping_host(host, count):
+    try:
+        result = subprocess.run(
+            ["ping", "-c", str(count), host],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        if result.returncode != 0:
+            return [host, "N/A", "N/A", "N/A", "N/A"]
+
+        for line in result.stdout.splitlines():
+            if "rtt min/avg/max/mdev" in line:
+                stats = line.split("=")[1].strip().split("/")
+                return [host] + stats[:4]
+        return [host, "N/A", "N/A", "N/A", "N/A"]
+    except Exception:
+        return [host, "Error", "Error", "Error", "Error"]
+
+
+# ------------- GUI ACTIONS ----------------
+def run_ping():
+    for widget in table_frame.winfo_children():
+        widget.destroy()
+
+    global results
+    results = []
+
+    sites = site_entry.get().replace(" ", "").split(",")
+    count = int(ping_count_entry.get())
+
+    # Header
+    headers = ["Website", "Min", "Avg", "Max", "Mdev"]
+    for i, h in enumerate(headers):
+        label = ctk.CTkLabel(table_frame, text=h, font=("Consolas", 14, "bold"))
+        label.grid(row=0, column=i, padx=5, pady=5)
+
+    with open("DataLog.txt", "w") as log_file:
+        for row_index, site in enumerate(sites, start=1):
+            result = ping_host(site, count)
+            results.append(result)
+            for col_index, value in enumerate(result):
+                cell = ctk.CTkLabel(table_frame, text=value, font=("Consolas", 13))
+                cell.grid(row=row_index, column=col_index, padx=5, pady=2)
+            log_file.write("{:<13} {:<7} {:<7} {:<7} {:<7}\n".format(*result))
+
+def export_txt():
+    with open("ping_results.txt", "w") as f:
+        f.write("Website       Min     Avg     Max     Mdev\n")
+        f.write("--------------------------------------------\n")
+        for row in results:
+            f.write("{:<13} {:<7} {:<7} {:<7} {:<7}\n".format(*row))
+
+def export_csv():
+    with open("ping_results.csv", "w", newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(["Website", "Min", "Avg", "Max", "Mdev"])
+        writer.writerows(results)
+
+def analyze_results():
+    global chart_canvas, summary_labels
+    try:
+        with open("DataLog.txt", "r") as f:
+            lines = [line.strip() for line in f if line.strip() and "N/A" not in line]
+
+        data = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) >= 5:
+                site = parts[0]
+                min_val = float(parts[1])
+                max_val = float(parts[3])
+                data.append((site, min_val, max_val))
+
+        data.sort(key=lambda x: x[1], reverse=True)
+
+        avg = sum([x[1] for x in data]) / len(data)
+        fastest = data[-1]
+        slowest = data[0]
+
+        for widget in table_frame.winfo_children():
+            widget.destroy()
+        if chart_canvas:
+            chart_canvas.get_tk_widget().destroy()
+        for lbl in summary_labels:
+            lbl.destroy()
+        summary_labels.clear()
+
+        headers = ["Website", "Min", "Max"]
+        for i, h in enumerate(headers):
+            label = ctk.CTkLabel(table_frame, text=h, font=("Consolas", 14, "bold"))
+            label.grid(row=0, column=i, padx=5, pady=5)
+
+        for idx, (site, min_v, max_v) in enumerate(data, start=1):
+            ctk.CTkLabel(table_frame, text=site).grid(row=idx, column=0, padx=5)
+            ctk.CTkLabel(table_frame, text=str(min_v)).grid(row=idx, column=1)
+            ctk.CTkLabel(table_frame, text=str(max_v)).grid(row=idx, column=2)
+
+        # Chart
+        fig, ax = plt.subplots(figsize=(6, 3))
+        sites = [x[0] for x in data]
+        mins = [x[1] for x in data]
+        ax.bar(sites, mins, color="skyblue")
+        ax.set_title("Min Latency per Site")
+        ax.set_ylabel("ms")
+        ax.set_xlabel("Website")
+        ax.grid(True)
+        plt.tight_layout()
+
+        chart_canvas = FigureCanvasTkAgg(fig, master=chart_frame)
+        chart_canvas.draw()
+        chart_canvas.get_tk_widget().pack(pady=10)
+
+        # Summary styled
+        summary_labels.append(ctk.CTkLabel(chart_frame, text=f"✅ Fastest: {fastest[0]} → {fastest[1]} ms", text_color="green"))
+        summary_labels.append(ctk.CTkLabel(chart_frame, text=f"❌ Slowest: {slowest[0]} → {slowest[1]} ms", text_color="red"))
+        summary_labels.append(ctk.CTkLabel(chart_frame, text=f"📊 Average Min Latency: {avg:.3f} ms", text_color="yellow"))
+        for lbl in summary_labels:
+            lbl.pack()
+
+    except FileNotFoundError:
+        print("DataLog.txt not found.")
+    except Exception as e:
+        print(f"Error: {str(e)}")
+
+# ------------- GUI LAYOUT ----------------
+input_frame = ctk.CTkFrame(app)
+input_frame.pack(pady=10)
+
+site_entry = ctk.CTkEntry(input_frame, width=400, placeholder_text="Enter websites (comma-separated)")
+site_entry.grid(row=0, column=0, padx=10)
+site_entry.insert(0, "google.com, facebook.com, tiktok.com")
+
+ping_count_entry = ctk.CTkEntry(input_frame, width=100, placeholder_text="Ping Count")
+ping_count_entry.grid(row=0, column=1)
+ping_count_entry.insert(0, "1")
+
+run_button = ctk.CTkButton(input_frame, text="Run Ping Test", command=run_ping)
+run_button.grid(row=0, column=2, padx=10)
+
+export_frame = ctk.CTkFrame(app)
+export_frame.pack(pady=5)
+
+export_txt_btn = ctk.CTkButton(export_frame, text="Export to TXT", command=export_txt)
+export_txt_btn.pack(side="left", padx=10)
+
+export_csv_btn = ctk.CTkButton(export_frame, text="Export to CSV", command=export_csv)
+export_csv_btn.pack(side="left", padx=10)
+
+analyze_button = ctk.CTkButton(export_frame, text="Analyze Results", command=analyze_results)
+analyze_button.pack(side="left", padx=10)
+
+table_frame = ctk.CTkFrame(app)
+table_frame.pack(pady=10, fill="both", expand=True)
+
+chart_frame = ctk.CTkFrame(app)
+chart_frame.pack(pady=10)
+
+def on_closing():
+    global chart_canvas
+    if chart_canvas:
+        chart_canvas.get_tk_widget().destroy()
+        chart_canvas = None
+    matplotlib.pyplot.close('all')
+    app.quit()
+    app.destroy()
+
+app.protocol("WM_DELETE_WINDOW", on_closing)
+app.mainloop()
